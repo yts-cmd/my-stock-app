@@ -9,10 +9,10 @@ from plotly.subplots import make_subplots
 # 1. 페이지 기본 설정 및 모바일 반응형 CSS
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="PRO 주식 매매 차트 & 전략 검증",
+    page_title="PRO 주식 매매 차트 (초단타~중장기 분석)",
     page_icon="📈",
     layout="wide",
-    initial_sidebar_state="auto"
+    initial_sidebar_state="expanded"
 )
 
 # 모바일 화면 대응 반응형 및 PWA 전체화면 커스텀 CSS/메타태그
@@ -25,9 +25,8 @@ st.markdown("""
 <meta name="theme-color" content="#2563EB">
 
 <style>
-    /* 전체 여백 모바일 최적화 */
     .block-container {
-        padding-top: 1.8rem;
+        padding-top: 1.5rem;
         padding-bottom: 2rem;
         padding-left: 1rem;
         padding-right: 1rem;
@@ -65,8 +64,6 @@ st.markdown("""
         font-weight: 700;
         font-size: 0.95rem;
     }
-    
-    /* 모바일 전용 미디어 쿼리 (화면 폭 768px 이하) */
     @media (max-width: 768px) {
         .current-price-up, .current-price-down {
             font-size: 1.6rem !important;
@@ -85,7 +82,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 2. 사이드바 - 종목/지수, 기간(1M/3M/6M/1Y/3Y), 주기(일/주/월봉)
+# 2. 사이드바 - 종목/지수 선택
 # -----------------------------------------------------------------------------
 st.sidebar.header("🎯 종목 및 시장 선택")
 
@@ -115,31 +112,72 @@ else:
     ticker_symbol = TICKER_DICT[selected_name]
     display_title = selected_name
 
-# 조회 기간 선택 옵션 (1개월, 3개월, 6개월, 1년, 3년)
-st.sidebar.subheader("📅 조회 기간")
-period_dict = {
-    "1개월": "1mo",
-    "3개월": "3mo",
-    "6개월": "6mo",
-    "1년 (기본)": "1y",
-    "3년": "3y"
-}
-selected_period_label = st.sidebar.selectbox("기간 선택", list(period_dict.keys()), index=3)
-selected_period = period_dict[selected_period_label]
-
-# 봉 주기 선택 (일봉, 주봉, 월봉)
-timeframe = st.sidebar.radio("캔들 봉 주기", ["일봉 (Day)", "주봉 (Week)", "월봉 (Month)"], index=0, horizontal=True)
-
 # -----------------------------------------------------------------------------
-# 3. 사이드바 - 매매 신호 및 지표 설정
+# 3. 요청사항: 분 / 시간 / 일 / 주 / 월 단위 캔들 봉 선택 시스템
 # -----------------------------------------------------------------------------
 st.sidebar.markdown("---")
-st.sidebar.subheader("⚙️ 매매 신호 & 지표 설정")
+st.sidebar.header("⏱️ 캔들 주기(Timeframe) 설정")
 
-show_signals = st.sidebar.checkbox("🚀 골든/데드크로스 매매 신호 표시", value=True, help="20일선과 60일선의 골든크로스(초록 ▲), 데드크로스(빨강 ▼)를 캔들 위에 표시합니다.")
+# 1단계: 단위 대분류 선택 (분 / 시간 / 일·주·월)
+unit_type = st.sidebar.radio(
+    "1️⃣ 기준 단위 선택",
+    ["분 단위 (Minute)", "시간 단위 (Hour)", "일/주/월 단위 (Day/Week/Month)"],
+    index=2
+)
+
+# 2단계: 세부 주기 선택 및 데이터 수집 파라미터 매핑
+if unit_type == "분 단위 (Minute)":
+    sub_interval = st.sidebar.selectbox(
+        "2️⃣ 세부 분봉 선택",
+        ["1분봉", "3분봉", "5분봉", "10분봉", "15분봉", "30분봉"],
+        index=2
+    )
+    # yfinance 제약조건(1분봉은 최대 7일, 그 외 분봉은 최대 60일 지원)에 맞춘 기간 선택
+    if sub_interval in ["1분봉", "3분봉"]:
+        period_options = {"최근 1일": "1d", "최근 3일": "3d", "최근 5일": "5d", "최근 7일": "7d"}
+        selected_period_label = st.sidebar.selectbox("3️⃣ 조회 기간 (최대 7일)", list(period_options.keys()), index=2)
+    else:
+        period_options = {"최근 5일": "5d", "최근 15일": "15d", "최근 1개월": "1mo", "최근 2개월(60일)": "60d"}
+        selected_period_label = st.sidebar.selectbox("3️⃣ 조회 기간 (최대 60일)", list(period_options.keys()), index=2)
+    selected_period = period_options[selected_period_label]
+    timeframe_desc = f"{sub_interval} ({selected_period_label})"
+    is_intraday = True
+
+elif unit_type == "시간 단위 (Hour)":
+    sub_interval = st.sidebar.selectbox(
+        "2️⃣ 세부 시간봉 선택",
+        ["1시간봉", "2시간봉", "4시간봉", "6시간봉", "8시간봉"],
+        index=0
+    )
+    # 시간봉은 최대 730일 지원
+    period_options = {"최근 1개월": "1mo", "최근 3개월": "3mo", "최근 6개월": "6mo", "최근 1년": "1y", "최근 2년": "2y"}
+    selected_period_label = st.sidebar.selectbox("3️⃣ 조회 기간", list(period_options.keys()), index=1)
+    selected_period = period_options[selected_period_label]
+    timeframe_desc = f"{sub_interval} ({selected_period_label})"
+    is_intraday = True
+
+else: # 일/주/월 단위
+    sub_interval = st.sidebar.selectbox(
+        "2️⃣ 세부 단위 선택",
+        ["일봉 (Day)", "주봉 (Week)", "월봉 (Month)"],
+        index=0
+    )
+    period_options = {"1개월": "1mo", "3개월": "3mo", "6개월": "6mo", "1년 (기본)": "1y", "3년": "3y", "5년": "5y"}
+    selected_period_label = st.sidebar.selectbox("3️⃣ 조회 기간", list(period_options.keys()), index=3)
+    selected_period = period_options[selected_period_label]
+    timeframe_desc = f"{sub_interval} ({selected_period_label})"
+    is_intraday = False
+
+# -----------------------------------------------------------------------------
+# 4. 사이드바 - 매매 신호 및 지표 설정
+# -----------------------------------------------------------------------------
+st.sidebar.markdown("---")
+st.sidebar.subheader("⚙️ 지표 & 매매 신호 설정")
+
+show_signals = st.sidebar.checkbox("🚀 골든/데드크로스 매매 신호 표시", value=True, help="20이평선과 60이평선의 골든크로스(초록 ▲), 데드크로스(빨강 ▼)를 캔들 위에 표시합니다.")
 
 with st.sidebar.expander("📌 캔들 차트 오버레이 지표", expanded=True):
-    show_ma_lines = st.checkbox("20일선(MA20) & 60일선(MA60)", value=True)
+    show_ma_lines = st.checkbox("20선(MA20) & 60선(MA60)", value=True, help="선택한 주기 기준의 20이평선과 60이평선을 겹쳐서 표시합니다.")
     show_bb = st.checkbox("볼린저 밴드 (20, 2σ)", value=False)
     show_ema = st.checkbox("지수이동평균선 (EMA 5, 20, 60, 120)", value=False)
     show_ichimoku = st.checkbox("일목균형표 (9, 26, 52)", value=False)
@@ -149,50 +187,70 @@ with st.sidebar.expander("📊 하단 분할 보조지표", expanded=True):
     show_vol = st.checkbox("2. 거래량 (Volume + 20MA)", value=True)
     show_macd = st.checkbox("3. MACD (12, 26, 9)", value=False)
     show_stoch = st.checkbox("4. 스토캐스틱 슬로우 (14, 3, 3)", value=False)
-    show_disparity = st.checkbox("5. 이격도 (20일)", value=False)
+    show_disparity = st.checkbox("5. 이격도 (20선 기준)", value=False)
 
 # -----------------------------------------------------------------------------
-# 4. 데이터 로드 및 전처리
+# 5. 분봉/시간봉/일/주/월봉 데이터 로드 및 리샘플링 함수
 # -----------------------------------------------------------------------------
-@st.cache_data(ttl=3600)
-def load_data(ticker: str, period: str):
+@st.cache_data(ttl=300)  # 분봉 데이터를 위해 5분 캐시
+def fetch_candle_data(ticker: str, u_type: str, s_interval: str, period: str):
     stock = yf.Ticker(ticker)
-    df = stock.history(period=period)
-    return df
+    
+    if u_type == "분 단위 (Minute)":
+        if s_interval in ["1분봉", "3분봉"]:
+            raw = stock.history(period=period, interval="1m")
+            if s_interval == "3분봉" and not raw.empty:
+                return raw.resample('3min').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
+            return raw
+        else: # 5분, 10분, 15분, 30분
+            base_int = "5m" if s_interval in ["5분봉", "10분봉"] else s_interval.replace("분봉", "m")
+            raw = stock.history(period=period, interval=base_int)
+            if s_interval == "10분봉" and not raw.empty:
+                return raw.resample('10min').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
+            return raw
+            
+    elif u_type == "시간 단위 (Hour)":
+        raw = stock.history(period=period, interval="1h")
+        if raw.empty:
+            return raw
+        rule = s_interval.replace("시간봉", "h")
+        if rule == "1h":
+            return raw
+        return raw.resample(rule).agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
+        
+    else: # 일/주/월
+        raw = stock.history(period=period, interval="1d")
+        if raw.empty:
+            return raw
+        if "일봉" in s_interval:
+            return raw
+        elif "주봉" in s_interval:
+            return raw.resample('W').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
+        elif "월봉" in s_interval:
+            return raw.resample('ME').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
+    return raw
 
-with st.spinner("데이터를 불러오는 중입니다..."):
-    raw_df = load_data(ticker_symbol, selected_period)
+with st.spinner(f"'{display_title}' {timeframe_desc} 데이터를 수집하고 있습니다..."):
+    df = fetch_candle_data(ticker_symbol, unit_type, sub_interval, selected_period)
 
-if raw_df.empty:
-    st.error(f"'{ticker_symbol}'에 해당하는 주가 데이터를 찾을 수 없습니다.")
+if df is None or df.empty:
+    st.error(f"'{ticker_symbol}'의 {timeframe_desc} 데이터를 불러올 수 없습니다. 다른 기간이나 종목을 선택해 주세요.")
     st.stop()
 
-raw_df = raw_df.dropna(subset=['Open', 'High', 'Low', 'Close'])
-
-# 주기별 리샘플링
-if timeframe == "주봉 (Week)":
-    df = raw_df.resample('W').agg({
-        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
-    }).dropna()
-elif timeframe == "월봉 (Month)":
-    df = raw_df.resample('ME').agg({
-        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
-    }).dropna()
-else:
-    df = raw_df.copy()
-
+# 결측치 정제
+df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
 if len(df) < 5:
-    st.warning("선택한 기간 내 데이터 포인트가 너무 적습니다. 더 긴 기간을 선택해 주세요.")
+    st.warning("데이터 포인트가 너무 적습니다. 더 긴 조회 기간을 선택해 주세요.")
     st.stop()
 
 # -----------------------------------------------------------------------------
-# 5. 기술적 보조지표 및 매매 신호 계산
+# 6. 기술적 보조지표 및 매매 신호 계산
 # -----------------------------------------------------------------------------
-# 20일선(MA20) & 60일선(MA60)
+# 20선(MA20) & 60선(MA60)
 df['MA20'] = df['Close'].rolling(window=20).mean()
 df['MA60'] = df['Close'].rolling(window=60).mean()
 
-# 골든크로스(매수) 및 데드크로스(매도) 감지
+# 골든크로스 & 데드크로스 감지
 df['Prev_MA20'] = df['MA20'].shift(1)
 df['Prev_MA60'] = df['MA60'].shift(1)
 df['Golden_Cross'] = (df['MA20'] > df['MA60']) & (df['Prev_MA20'] <= df['Prev_MA60'])
@@ -243,12 +301,14 @@ df['Ichimoku_SpanB'] = ((df['High'].rolling(52).max() + df['Low'].rolling(52).mi
 df['Ichimoku_Chikou'] = df['Close'].shift(-26)
 
 # -----------------------------------------------------------------------------
-# 6. 매매 신호 추적 및 백테스팅 계산
+# 7. 매매 신호 및 백테스팅 내역 계산
 # -----------------------------------------------------------------------------
 signals_list = []
 trades = []
 in_position = False
 entry_date, entry_price = None, None
+
+time_str_format = '%Y-%m-%d %H:%M' if is_intraday else '%Y-%m-%d'
 
 for date, row in df.iterrows():
     if row['Golden_Cross']:
@@ -274,13 +334,11 @@ for date, row in df.iterrows():
             exit_date = date
             exit_price = row['Close']
             trade_ret = (exit_price - entry_price) / entry_price * 100
-            hold_days = (exit_date - entry_date).days
             trades.append({
-                '매수일': entry_date.strftime('%Y-%m-%d'),
+                '매수시점': entry_date.strftime(time_str_format),
                 '매수가': entry_price,
-                '매도일': exit_date.strftime('%Y-%m-%d'),
+                '매도시점': exit_date.strftime(time_str_format),
                 '매도가': exit_price,
-                '보유일수': f"{hold_days}일",
                 '수익률(%)': trade_ret,
                 '결과': '승리 🟢' if trade_ret > 0 else '패배 🔴'
             })
@@ -289,13 +347,11 @@ for date, row in df.iterrows():
 if in_position:
     current_p = df['Close'].iloc[-1]
     trade_ret = (current_p - entry_price) / entry_price * 100
-    hold_days = (df.index[-1] - entry_date).days
     trades.append({
-        '매수일': entry_date.strftime('%Y-%m-%d'),
+        '매수시점': entry_date.strftime(time_str_format),
         '매수가': entry_price,
-        '매도일': '현재 보유 중 ⏳',
+        '매도시점': '현재 보유 중 ⏳',
         '매도가': current_p,
-        '보유일수': f"{hold_days}일",
         '수익률(%)': trade_ret,
         '결과': '진행 중'
     })
@@ -303,7 +359,7 @@ if in_position:
 trades_df = pd.DataFrame(trades)
 
 # -----------------------------------------------------------------------------
-# 7. 상단 요약 카드 컴포넌트
+# 8. 상단 시세 전광판 및 핵심 요약 카드
 # -----------------------------------------------------------------------------
 latest = df.iloc[-1]
 prev = df.iloc[-2] if len(df) > 1 else latest
@@ -315,33 +371,32 @@ price_class = "current-price-up" if is_up else "current-price-down"
 badge_class = "badge-up" if is_up else "badge-down"
 sign_symbol = "▲" if is_up else "▼"
 
-st.markdown(f"## {display_title} <span style='font-size:1.05rem; color:#6B7280; font-weight:normal;'>[{timeframe} | {selected_period_label}]</span>", unsafe_allow_html=True)
+latest_time_str = df.index[-1].strftime(time_str_format)
+
+st.markdown(f"## {display_title} <span style='font-size:1.05rem; color:#2563EB; font-weight:bold;'>[{timeframe_desc}]</span>", unsafe_allow_html=True)
 
 st.markdown(f"""
 <div class="trading-header">
     <span class="{price_class}">{latest['Close']:,.2f}</span>
     <span class="{badge_class}">{sign_symbol} {abs(change_val):,.2f} ({change_pct:+.2f}%)</span>
-    <span style="color:#64748B; font-size:0.9rem; margin-left:auto;">기준일: <b>{df.index[-1].strftime('%Y-%m-%d')}</b></span>
+    <span style="color:#64748B; font-size:0.9rem; margin-left:auto;">기준 시점: <b>{latest_time_str}</b></span>
 </div>
 """, unsafe_allow_html=True)
 
 # 최근 신호 정보
 if signals_list:
     last_sig = signals_list[-1]
-    sig_date_str = last_sig['date'].strftime('%Y-%m-%d')
+    sig_date_str = last_sig['date'].strftime(time_str_format)
     sig_type_str = last_sig['type']
     sig_price = last_sig['price']
     sig_elapsed_ret = (latest['Close'] - sig_price) / sig_price * 100
 else:
-    sig_date_str = "선택 기간 내 신호 없음"
+    sig_date_str = "신호 없음"
     sig_type_str = "신호 대기 중"
     sig_price = 0
     sig_elapsed_ret = 0
 
-if pd.notna(latest['MA20']) and pd.notna(latest['MA60']):
-    alignment_status = "정배열 (상승 우세 🟢)" if latest['MA20'] > latest['MA60'] else "역배열 (조정 우세 🔴)"
-else:
-    alignment_status = "계산 중"
+alignment_status = "정배열 (상승 우세 🟢)" if (pd.notna(latest['MA20']) and pd.notna(latest['MA60']) and latest['MA20'] > latest['MA60']) else "역배열 (조정 우세 🔴)"
 
 rsi_now = latest['RSI'] if pd.notna(latest['RSI']) else 50
 if rsi_now >= 70:
@@ -353,26 +408,18 @@ else:
 
 top_c1, top_c2, top_c3, top_c4 = st.columns(4)
 with top_c1:
-    st.metric(
-        label="🔔 최근 발생 신호",
-        value=f"{sig_type_str}",
-        delta=f"발생일: {sig_date_str}" if sig_price > 0 else "신호 없음"
-    )
+    st.metric(label="🔔 최근 발생 신호", value=f"{sig_type_str}", delta=f"{sig_date_str}" if sig_price > 0 else "신호 없음")
 with top_c2:
-    st.metric(
-        label="📈 신호 이후 성과",
-        value=f"{sig_elapsed_ret:+.2f}%" if sig_price > 0 else "-",
-        delta="진입가 대비 현재"
-    )
+    st.metric(label="📈 신호 이후 성과", value=f"{sig_elapsed_ret:+.2f}%" if sig_price > 0 else "-", delta="진입 대비 성과")
 with top_c3:
-    st.metric(label="📐 이평선 배열", value=alignment_status)
+    st.metric(label="📐 20선 / 60선 배열", value=alignment_status)
 with top_c4:
     st.metric(label="📊 RSI (14)", value=rsi_desc)
 
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# 8. Plotly 캔들스틱 + 매매신호 + RSI 모바일 반응형 차트
+# 9. Plotly 캔들스틱 + 신호 마커 + RSI 반응형 차트
 # -----------------------------------------------------------------------------
 active_subplots = []
 if show_rsi:
@@ -395,7 +442,7 @@ else:
     sub_height = (1.0 - main_height) / len(active_subplots)
     row_heights = [main_height] + [sub_height] * len(active_subplots)
 
-subplot_titles = [f"{display_title} 캔들스틱 & 매매 신호"] + active_subplots
+subplot_titles = [f"{display_title} [{sub_interval}] 캔들스틱 매매 차트"] + active_subplots
 
 fig = make_subplots(
     rows=total_rows,
@@ -408,8 +455,11 @@ fig = make_subplots(
 
 custom_data = np.stack((df['Volume'],), axis=-1)
 
+# 호버 툴팁 포맷 (분봉/시간봉일 때는 시간까지, 일/주/월일 때는 날짜만)
+candle_date_fmt = "%{x|%Y-%m-%d %H:%M}" if is_intraday else "%{x|%Y-%m-%d}"
+
 candlestick_hovertemplate = (
-    "<b>📅 %{x|%Y-%m-%d}</b><br>"
+    f"<b>📅 {candle_date_fmt}</b><br>"
     "━━━━━━━━━━━━━━━━━━<br>"
     "• <b>시가</b>:  %{open:,.2f}<br>"
     "• <b>고가</b>:  <span style='color:#EF4444;'>%{high:,.2f}</span><br>"
@@ -419,7 +469,7 @@ candlestick_hovertemplate = (
     "<extra></extra>"
 )
 
-# [ROW 1: 메인 캔들스틱]
+# === [ROW 1: 메인 캔들스틱] ===
 fig.add_trace(go.Candlestick(
     x=df.index,
     open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
@@ -431,10 +481,10 @@ fig.add_trace(go.Candlestick(
     hoverlabel=dict(bgcolor="#1E293B", font_color="#FFFFFF", font_size=12)
 ), row=1, col=1)
 
-# 20일선 & 60일선
+# 20선 & 60선
 if show_ma_lines:
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], mode='lines', name='20일선', line=dict(color='#F59E0B', width=2.0), hovertemplate='20일선: %{y:,.2f}<extra></extra>'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA60'], mode='lines', name='60일선', line=dict(color='#10B981', width=2.0), hovertemplate='60일선: %{y:,.2f}<extra></extra>'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], mode='lines', name='20선', line=dict(color='#F59E0B', width=2.0), hovertemplate='20선: %{y:,.2f}<extra></extra>'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA60'], mode='lines', name='60선', line=dict(color='#10B981', width=2.0), hovertemplate='60선: %{y:,.2f}<extra></extra>'), row=1, col=1)
 
 # 골든/데드크로스 마커
 if show_signals:
@@ -449,7 +499,7 @@ if show_signals:
             textposition='bottom center',
             textfont=dict(color='#10B981', size=11),
             name='골든크로스(매수 ▲)',
-            hovertemplate='<b>🟢 매수 신호</b><br>날짜: %{x|%Y-%m-%d}<br>체결가: %{y:,.2f}<extra></extra>'
+            hovertemplate=f'<b>🟢 매수 신호</b><br>시점: {candle_date_fmt}<br>체결가: %{{y:,.2f}}<extra></extra>'
         ), row=1, col=1)
 
     dead_df = df[df['Dead_Cross']]
@@ -463,7 +513,7 @@ if show_signals:
             textposition='top center',
             textfont=dict(color='#EF4444', size=11),
             name='데드크로스(매도 ▼)',
-            hovertemplate='<b>🔴 매도 신호</b><br>날짜: %{x|%Y-%m-%d}<br>체결가: %{y:,.2f}<extra></extra>'
+            hovertemplate=f'<b>🔴 매도 신호</b><br>시점: {candle_date_fmt}<br>체결가: %{{y:,.2f}}<extra></extra>'
         ), row=1, col=1)
 
 if show_bb:
@@ -480,10 +530,9 @@ if show_ema:
 
 fig.update_yaxes(title_text="가격", automargin=True, showgrid=True, gridcolor="#F1F5F9", tickformat=",.0f", row=1, col=1)
 
-# 하단 보조지표
+# === [하단 분할 보조지표 서브플롯] ===
 current_row = 2
 
-# RSI 서브플롯
 if show_rsi:
     fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], mode='lines', name='RSI(14)', line=dict(color='#8B5CF6', width=1.8), hovertemplate='RSI: %{y:.1f}<extra></extra>'), row=current_row, col=1)
     fig.add_hline(y=70, line_width=1.2, line_dash="dash", line_color="#EF4444", annotation_text="과매수(70)", annotation_position="top right", row=current_row, col=1)
@@ -492,7 +541,6 @@ if show_rsi:
     fig.update_yaxes(range=[0, 100], title_text="RSI", automargin=True, showgrid=True, gridcolor="#F1F5F9", row=current_row, col=1)
     current_row += 1
 
-# 거래량 서브플롯
 if show_vol:
     vol_colors = ['#EF4444' if row['Close'] >= row['Open'] else '#3B82F6' for _, row in df.iterrows()]
     fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=vol_colors, name='거래량', hovertemplate='거래량: %{y:,d}<extra></extra>'), row=current_row, col=1)
@@ -523,7 +571,6 @@ if show_disparity:
     fig.update_yaxes(title_text="이격도", automargin=True, showgrid=True, gridcolor="#F1F5F9", row=current_row, col=1)
     current_row += 1
 
-# 모바일 반응형 차트 높이 및 여백 최적화
 chart_total_height = 500 + (len(active_subplots) * 140)
 fig.update_layout(
     xaxis_rangeslider_visible=False,
@@ -537,27 +584,26 @@ fig.update_layout(
         x=1,
         font=dict(size=10)
     ),
-    margin=dict(l=5, r=5, t=30, b=10),  # 스마트폰 폭을 최대로 살리기 위해 여백 최소화
+    margin=dict(l=5, r=5, t=30, b=10),
     height=chart_total_height
 )
 
-# 모바일 최적화 인터랙티브 설정 (터치 스크롤 시 먹통 방지)
 plotly_mobile_config = {
-    'responsive': True,           # 화면 크기 변경 시 자동 리사이즈
-    'scrollZoom': False,          # 모바일 웹 브라우저 스크롤 편의를 위해 마우스/터치 확대 방지
-    'displayModeBar': False,      # 모바일 작은 화면을 가리는 상단 툴바 숨김
+    'responsive': True,
+    'scrollZoom': False,
+    'displayModeBar': False,
     'displaylogo': False
 }
 
 st.plotly_chart(fig, use_container_width=True, config=plotly_mobile_config)
 
 # -----------------------------------------------------------------------------
-# 9. 매매 전략 성과 검증 대시보드
+# 10. 매매 전략 성과 검증 대시보드
 # -----------------------------------------------------------------------------
-st.subheader("🧪 전략 정확도 검증 (백테스팅)")
+st.subheader(f"🧪 [{sub_interval}] 20선 & 60선 크로스 전략 검증")
 
 if not trades_df.empty:
-    completed_trades = trades_df[trades_df['매도일'] != '현재 보유 중 ⏳']
+    completed_trades = trades_df[trades_df['매도시점'] != '현재 보유 중 ⏳']
     total_trades_cnt = len(completed_trades)
     
     if total_trades_cnt > 0:
@@ -578,7 +624,7 @@ if not trades_df.empty:
     b_col3.metric("단순 보유 수익률", f"{buy_and_hold_return:+.2f}%")
     b_col4.metric("평균 거래 수익률", f"{avg_ret:+.2f}%")
 
-    with st.expander("📜 상세 매매 일지 (Trade Log)", expanded=True):
+    with st.expander(f"📜 [{sub_interval}] 상세 매매 일지 (Trade Log)", expanded=True):
         st.dataframe(
             trades_df.style.format({
                 '매수가': '{:,.2f}',
@@ -588,4 +634,4 @@ if not trades_df.empty:
             use_container_width=True
         )
 else:
-    st.info("💡 선택 기간 내 매매 신호가 없습니다. 사이드바에서 조회 기간을 더 길게(1년 또는 3년) 늘려보세요.")
+    st.info(f"💡 선택하신 [{timeframe_desc}] 기간 내에 발생한 골든/데드크로스 신호가 없습니다. 사이드바에서 조회 기간을 더 길게 변경해 보세요.")
