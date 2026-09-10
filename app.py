@@ -571,7 +571,16 @@ if show_disparity:
     fig.update_yaxes(title_text="이격도", automargin=True, showgrid=True, gridcolor="#F1F5F9", row=current_row, col=1)
     current_row += 1
 
-chart_total_height = 500 + (len(active_subplots) * 140)
+# 차트 편의 기능 바 (화면 복귀 안내 및 와이드 확대 모드)
+c_info, c_wide = st.columns([7, 3])
+with c_info:
+    st.caption("💡 **화면 조작 팁**: 차트가 안 보일 땐 **[마우스 왼쪽 더블클릭]** 또는 차트 우측 상단의 **[집 모양(Reset) 아이콘]**을 누르면 원래대로 복귀합니다. 차트 우측 상단의 **[⛶ 전체화면 아이콘]**을 누르면 모니터 전체 화면으로 확대됩니다.")
+with c_wide:
+    is_wide_chart = st.checkbox("🖥️ 차트 세로 확대 (와이드 뷰)", value=False, help="차트 높이를 대폭 확대하여 보조지표와 캔들을 크고 시원하게 봅니다.")
+
+base_height = 780 if is_wide_chart else 500
+chart_total_height = base_height + (len(active_subplots) * 140)
+
 fig.update_layout(
     xaxis_rangeslider_visible=False,
     template="plotly_white",
@@ -584,18 +593,27 @@ fig.update_layout(
         x=1,
         font=dict(size=10)
     ),
-    margin=dict(l=5, r=5, t=30, b=10),
+    margin=dict(l=5, r=5, t=35, b=10),
     height=chart_total_height
 )
 
-plotly_mobile_config = {
+# Plotly 차트 인터랙티브 및 복귀/전체화면 설정
+plotly_chart_config = {
     'responsive': True,
     'scrollZoom': False,
-    'displayModeBar': False,
-    'displaylogo': False
+    'doubleClick': 'reset+autosize',   # 요청사항 1: 마우스 왼쪽 더블클릭 시 원래 화면으로 즉시 복귀!
+    'doubleClickDelay': 300,           # 더블클릭 감지 딜레이(ms)
+    'displayModeBar': True,            # 요청사항 2: 우측 상단 툴바(리셋, 줌, 카메라 등) 활성화
+    'modeBarButtonsToRemove': ['lasso2d', 'select2d'],
+    'displaylogo': False,
+    'toImageButtonOptions': {
+        'format': 'png',
+        'filename': f'{ticker_symbol}_{sub_interval}_chart',
+        'scale': 2
+    }
 }
 
-st.plotly_chart(fig, use_container_width=True, config=plotly_mobile_config)
+st.plotly_chart(fig, use_container_width=True, config=plotly_chart_config)
 
 # -----------------------------------------------------------------------------
 # 10. 매매 전략 성과 검증 대시보드
