@@ -82,11 +82,48 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 2. 사이드바 - 종목/지수 선택
+# 2. 사이드바 - 종목/지수 선택 & 티커 검색 기록 자동 저장 시스템
 # -----------------------------------------------------------------------------
 st.sidebar.header("🎯 종목 및 시장 선택")
 
-TICKER_DICT = {
+import json
+import os
+
+HISTORY_FILE = os.path.join(os.path.dirname(__file__), "search_history.json")
+
+def get_search_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def add_search_history(ticker: str):
+    ticker = ticker.strip().upper()
+    if not ticker or ticker == "CUSTOM":
+        return
+    history = get_search_history()
+    if ticker in history:
+        history.remove(ticker)
+    history.insert(0, ticker)  # 최신 검색어가 맨 위로
+    history = history[:15]     # 최대 15개 유지
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def clear_search_history():
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump([], f)
+    except Exception:
+        pass
+
+# 기본 프리셋 종목 맵
+BASE_TICKER_DICT = {
     "🇰🇷 코스피 (KOSPI)": "^KS11",
     "🇰🇷 코스닥 (KOSDAQ)": "^KQ11",
     "🇺🇸 S&P 500": "^GSPC",
@@ -99,17 +136,64 @@ TICKER_DICT = {
     "🍎 애플 (AAPL)": "AAPL",
     "🚗 테슬라 (TSLA)": "TSLA",
     "⚡ 엔비디아 (NVDA)": "NVDA",
-    "💻 마이크로소프트 (MSFT)": "MSFT",
-    "✏️ 직접 티커 입력": "CUSTOM"
+    "💻 마이크로소프트 (MSFT)": "MSFT"
 }
 
-selected_name = st.sidebar.selectbox("분석할 종목 또는 지수", list(TICKER_DICT.keys()), index=5)
+# 저장된 최근 조회 기록 로드
+saved_history = get_search_history()
 
-if selected_name == "✏️ 직접 티커 입력":
-    ticker_symbol = st.sidebar.text_input("티커 심볼 입력 (예: 000270.KS, TSLA, QQQ)", value="005930.KS").strip().upper()
+# 드롭다운 메뉴 구성 (기본 프리셋 + 저장된 최근 조회 티커 + 직접 입력)
+dropdown_options = list(BASE_TICKER_DICT.keys())
+
+# 저장된 티커가 있으면 드롭다운에 추가
+history_map = {}
+if saved_history:
+    for h in saved_history:
+        label = f"⭐ [최근조회] {h}"
+        dropdown_options.append(label)
+        history_map[label] = h
+
+dropdown_options.append("✏️ 직접 티커 새로 입력")
+
+selected_name = st.sidebar.selectbox("분석할 종목 또는 지수 선택", dropdown_options, index=5)
+
+# 선택에 따른 티커 심볼 결정
+if selected_name == "✏️ 직접 티커 새로 입력":
+    # 텍스트 입력창
+    user_input = st.sidebar.text_input(
+        "티커 심볼 입력 (예: 005490.KS, SOXL, QQQ, TSLA)",
+        value=saved_history[0] if saved_history else "005490.KS"
+    ).strip().upper()
+    
+    ticker_symbol = user_input
     display_title = f"직접 입력 ({ticker_symbol})"
+    
+    # 입력된 티커 자동 저장
+    if ticker_symbol:
+        add_search_history(ticker_symbol)
+        
+    # 최근 검색어 빠른 선택 태그 및 삭제
+    if saved_history:
+        st.sidebar.caption("📌 최근 조회 기록 (클릭 시 자동 입력):")
+        tag_cols = st.sidebar.columns(3)
+        for idx, h_tick in enumerate(saved_history[:6]):
+            col_idx = idx % 3
+            if tag_cols[col_idx].button(h_tick, key=f"quick_hist_{h_tick}"):
+                ticker_symbol = h_tick
+                display_title = f"직접 입력 ({ticker_symbol})"
+                add_search_history(h_tick)
+                st.rerun()
+
+        if st.sidebar.button("🗑️ 최근 검색 기록 전체 삭제", use_container_width=True):
+            clear_search_history()
+            st.rerun()
+
+elif selected_name in history_map:
+    ticker_symbol = history_map[selected_name]
+    display_title = f"{ticker_symbol} (최근 조회)"
+    add_search_history(ticker_symbol)  # 다시 조회했으므로 최상단 갱신
 else:
-    ticker_symbol = TICKER_DICT[selected_name]
+    ticker_symbol = BASE_TICKER_DICT[selected_name]
     display_title = selected_name
 
 # -----------------------------------------------------------------------------
@@ -169,15 +253,65 @@ else: # 일/주/월 단위
     is_intraday = False
 
 # -----------------------------------------------------------------------------
-# 4. 사이드바 - 매매 신호 및 지표 설정
+# 4. 사이드바 - 실시간 1초 단위 자동 갱신 & 지표 설정
 # -----------------------------------------------------------------------------
 st.sidebar.markdown("---")
-st.sidebar.subheader("⚙️ 지표 & 매매 신호 설정")
+st.sidebar.header("⚡ 실시간 시세 & 자동 갱신")
 
-show_signals = st.sidebar.checkbox("🚀 골든/데드크로스 매매 신호 표시", value=True, help="20이평선과 60이평선의 골든크로스(초록 ▲), 데드크로스(빨강 ▼)를 캔들 위에 표시합니다.")
+auto_refresh = st.sidebar.checkbox("🟢 실시간 자동 갱신 (Live 모드)", value=True, help="네이버증권/실시간 거래소와 0초 딜레이로 연동되어 매 초마다 시세를 갱신합니다.")
+refresh_sec = st.sidebar.select_slider(
+    "자동 갱신 주기 (초)",
+    options=[1, 2, 3, 5, 10],
+    value=1,
+    help="1초로 설정 시 1초마다 실시간 시세를 감지하여 차트를 새로고침합니다."
+)
 
-with st.sidebar.expander("📌 캔들 차트 오버레이 지표", expanded=True):
-    show_ma_lines = st.checkbox("20선(MA20) & 60선(MA60)", value=True, help="선택한 주기 기준의 20이평선과 60이평선을 겹쳐서 표시합니다.")
+if auto_refresh:
+    try:
+        from streamlit_autorefresh import st_autorefresh
+        st_autorefresh(interval=refresh_sec * 1000, key="live_ticker_autorefresh")
+    except Exception:
+        pass
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎯 5선/20선 매매 전략 & 수수료 설정")
+
+strategy_type = st.sidebar.selectbox(
+    "매매 타점 전략 선택",
+    [
+        "⚡ 5선/20선 골든크로스 + 0.2%이상 목표익절 (추천)",
+        "⚡ 5선/20선 순수 골든/데드크로스 타점",
+        "🐢 20선/60선 중기 추세 크로스 타점"
+    ],
+    index=0,
+    help="5일선과 20일선의 교차 타점 및 수수료를 극복하는 목표 익절 전략을 선택합니다."
+)
+
+fee_rate = st.sidebar.number_input(
+    "💸 매매 수수료율 (% 단위, 제세금 포함)",
+    min_value=0.0,
+    max_value=1.0,
+    value=0.2,
+    step=0.05,
+    help="매수/매도시 발생하는 총 수수료와 세금입니다. (매수 즉시 -0.2%부터 시작)"
+)
+
+if "목표익절" in strategy_type:
+    target_net_profit = st.sidebar.number_input(
+        "🎯 목표 순익절률 (% 단위, 수수료 0.2% 공제 후)",
+        min_value=0.1,
+        max_value=10.0,
+        value=0.2,
+        step=0.05,
+        help="매수 즉시 수수료 0.2% 마이너스(-0.2%)로 시작하므로, 수수료를 모두 메꾸고 계좌에 실제로 남는 순수익 목표치(기본 +0.2% 이상)입니다."
+    )
+else:
+    target_net_profit = 0.2
+
+show_signals = st.sidebar.checkbox("🚀 차트 위 매수(▲)/매도(▼) 마커 표시", value=True)
+
+with st.sidebar.expander("📌 캔들 차트 이동평균선 & 오버레이", expanded=True):
+    show_ma_lines = st.checkbox("5선 · 20선 · 60선 이평선 표시", value=True, help="5선(보라), 20선(황금), 60선(초록)을 캔들 위에 표시합니다.")
     show_bb = st.checkbox("볼린저 밴드 (20, 2σ)", value=False)
     show_ema = st.checkbox("지수이동평균선 (EMA 5, 20, 60, 120)", value=False)
     show_ichimoku = st.checkbox("일목균형표 (9, 26, 52)", value=False)
@@ -189,10 +323,62 @@ with st.sidebar.expander("📊 하단 분할 보조지표", expanded=True):
     show_stoch = st.checkbox("4. 스토캐스틱 슬로우 (14, 3, 3)", value=False)
     show_disparity = st.checkbox("5. 이격도 (20선 기준)", value=False)
 
+import requests
+import re
+
+def get_live_quote(ticker: str):
+    """
+    네이버증권 실시간 API(한국 주식/지수 0초 딜레이) 및 yfinance fast_info(미국) 연동
+    """
+    # 1. 한국 지수 (KOSPI, KOSDAQ)
+    if ticker in ['^KS11', 'KOSPI']:
+        try:
+            r = requests.get('https://m.stock.naver.com/api/index/KOSPI/basic', headers={'User-Agent':'Mozilla/5.0'}, timeout=2).json()
+            p = float(str(r.get('closePrice', '0')).replace(',', ''))
+            c = float(str(r.get('compareToPreviousClosePrice', '0')).replace(',', ''))
+            ratio = float(str(r.get('fluctuationsRatio', '0')).replace(',', ''))
+            return p, c, ratio, r.get('localTradedAt', '')
+        except Exception:
+            pass
+    elif ticker in ['^KQ11', 'KOSDAQ']:
+        try:
+            r = requests.get('https://m.stock.naver.com/api/index/KOSDAQ/basic', headers={'User-Agent':'Mozilla/5.0'}, timeout=2).json()
+            p = float(str(r.get('closePrice', '0')).replace(',', ''))
+            c = float(str(r.get('compareToPreviousClosePrice', '0')).replace(',', ''))
+            ratio = float(str(r.get('fluctuationsRatio', '0')).replace(',', ''))
+            return p, c, ratio, r.get('localTradedAt', '')
+        except Exception:
+            pass
+
+    # 2. 한국 개별 주식 (6자리 종목코드 추출)
+    kr_match = re.search(r'\d{6}', ticker)
+    if kr_match:
+        code = kr_match.group(0)
+        try:
+            r = requests.get(f'https://m.stock.naver.com/api/stock/{code}/basic', headers={'User-Agent':'Mozilla/5.0'}, timeout=2).json()
+            p = float(str(r.get('closePrice', '0')).replace(',', ''))
+            c = float(str(r.get('compareToPreviousClosePrice', '0')).replace(',', ''))
+            ratio = float(str(r.get('fluctuationsRatio', '0')).replace(',', ''))
+            return p, c, ratio, r.get('localTradedAt', '')
+        except Exception:
+            pass
+
+    # 3. 미국/글로벌 종목 및 지수 (yfinance 빠른 시세 fast_info)
+    try:
+        stk = yf.Ticker(ticker)
+        fi = stk.fast_info
+        p = fi['last_price']
+        prev = fi['previous_close']
+        c = p - prev
+        ratio = (c / prev) * 100 if prev else 0
+        return float(p), float(c), float(ratio), '실시간(US)'
+    except Exception:
+        return None, None, None, None
+
 # -----------------------------------------------------------------------------
 # 5. 분봉/시간봉/일/주/월봉 데이터 로드 및 리샘플링 함수
 # -----------------------------------------------------------------------------
-@st.cache_data(ttl=300)  # 분봉 데이터를 위해 5분 캐시
+@st.cache_data(ttl=15)  # 실시간 대응을 위해 캐시를 15초로 단축
 def fetch_candle_data(ticker: str, u_type: str, s_interval: str, period: str):
     stock = yf.Ticker(ticker)
     
@@ -237,24 +423,67 @@ if df is None or df.empty:
     st.error(f"'{ticker_symbol}'의 {timeframe_desc} 데이터를 불러올 수 없습니다. 다른 기간이나 종목을 선택해 주세요.")
     st.stop()
 
+# 정상 로드된 경우 검색 기록에 안전하게 자동 저장
+if ticker_symbol not in BASE_TICKER_DICT.values():
+    add_search_history(ticker_symbol)
+
 # 결측치 정제
 df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
 if len(df) < 5:
     st.warning("데이터 포인트가 너무 적습니다. 더 긴 조회 기간을 선택해 주세요.")
     st.stop()
 
+# ⚡ [핵심] 네이버증권/실시간 거래소 0초 딜레이 호가 즉시 반영
+live_price, live_change, live_ratio, live_time = get_live_quote(ticker_symbol)
+has_live_quote = False
+if live_price is not None and live_price > 0:
+    has_live_quote = True
+    # 캔들의 마지막 종가 및 고/저가를 실시간 현재가로 보정
+    df.loc[df.index[-1], 'Close'] = live_price
+    if live_price > df.loc[df.index[-1], 'High']:
+        df.loc[df.index[-1], 'High'] = live_price
+    if live_price < df.loc[df.index[-1], 'Low']:
+        df.loc[df.index[-1], 'Low'] = live_price
+
+# 실시간 시세 및 현재 표시 가격 결정
+if has_live_quote and live_price is not None:
+    current_display_price = live_price
+    change_val = live_change
+    change_pct = live_ratio
+    if live_time and 'T' in live_time:
+        latest_time_str = live_time.replace('T', ' ')[:19]
+    elif live_time:
+        latest_time_str = live_time
+    else:
+        latest_time_str = df.index[-1].strftime(time_str_format)
+    live_badge_html = f"<span style='background:#DCFCE7; color:#15803D; padding:3px 8px; border-radius:4px; font-weight:bold; font-size:0.85rem;'>● 실시간 호가 연동 ({refresh_sec}초 갱신)</span>"
+else:
+    current_display_price = df['Close'].iloc[-1]
+    prev_close = df['Close'].iloc[-2] if len(df) > 1 else current_display_price
+    change_val = current_display_price - prev_close
+    change_pct = (change_val / prev_close) * 100 if prev_close != 0 else 0
+    latest_time_str = df.index[-1].strftime(time_str_format)
+    live_badge_html = ""
+
 # -----------------------------------------------------------------------------
-# 6. 기술적 보조지표 및 매매 신호 계산
+# 6. 기술적 보조지표 및 5선/20선/60선 이동평균 계산
 # -----------------------------------------------------------------------------
-# 20선(MA20) & 60선(MA60)
+# 5선(단기선), 20선(생명선), 60선(수급선)
+df['MA5'] = df['Close'].rolling(window=5).mean()
 df['MA20'] = df['Close'].rolling(window=20).mean()
 df['MA60'] = df['Close'].rolling(window=60).mean()
 
-# 골든크로스 & 데드크로스 감지
+df['Prev_MA5'] = df['MA5'].shift(1)
 df['Prev_MA20'] = df['MA20'].shift(1)
 df['Prev_MA60'] = df['MA60'].shift(1)
-df['Golden_Cross'] = (df['MA20'] > df['MA60']) & (df['Prev_MA20'] <= df['Prev_MA60'])
-df['Dead_Cross'] = (df['MA20'] < df['MA60']) & (df['Prev_MA20'] >= df['Prev_MA60'])
+
+# 5선/20선 크로스
+df['Golden_5_20'] = (df['MA5'] > df['MA20']) & (df['Prev_MA5'] <= df['Prev_MA20'])
+df['Dead_5_20'] = (df['MA5'] < df['MA20']) & (df['Prev_MA5'] >= df['Prev_MA20'])
+
+# 20선/60선 크로스
+df['Golden_20_60'] = (df['MA20'] > df['MA60']) & (df['Prev_MA20'] <= df['Prev_MA60'])
+df['Dead_20_60'] = (df['MA20'] < df['MA60']) & (df['Prev_MA20'] >= df['Prev_MA60'])
 
 # RSI (14)
 delta = df['Close'].diff()
@@ -301,84 +530,126 @@ df['Ichimoku_SpanB'] = ((df['High'].rolling(52).max() + df['Low'].rolling(52).mi
 df['Ichimoku_Chikou'] = df['Close'].shift(-26)
 
 # -----------------------------------------------------------------------------
-# 7. 매매 신호 및 백테스팅 내역 계산
+# 7. 매매 전략 타점 및 수수료(-0.2% 시작) 반영 백테스팅 시뮬레이션
 # -----------------------------------------------------------------------------
 signals_list = []
 trades = []
 in_position = False
 entry_date, entry_price = None, None
 
-time_str_format = '%Y-%m-%d %H:%M' if is_intraday else '%Y-%m-%d'
-
 for date, row in df.iterrows():
-    if row['Golden_Cross']:
+    if "5선/20선" in strategy_type:
+        buy_cond = row['Golden_5_20']
+        dead_cond = row['Dead_5_20']
+        strat_title = "5/20 골든크로스"
+        dead_title = "5/20 데드크로스"
+    else:
+        buy_cond = row['Golden_20_60']
+        dead_cond = row['Dead_20_60']
+        strat_title = "20/60 골든크로스"
+        dead_title = "20/60 데드크로스"
+
+    # 1. 매수 진입 판정
+    if buy_cond and not in_position:
+        in_position = True
+        entry_date = date
+        entry_price = row['Close']
         signals_list.append({
             'date': date,
-            'type': '골든크로스 (매수)',
-            'price': row['Close'],
+            'type': f'{strat_title} (매수)',
+            'price': entry_price,
             'signal': 'BUY'
         })
-        if not in_position:
-            in_position = True
-            entry_date = date
-            entry_price = row['Close']
-            
-    elif row['Dead_Cross']:
-        signals_list.append({
-            'date': date,
-            'type': '데드크로스 (매도)',
-            'price': row['Close'],
-            'signal': 'SELL'
-        })
-        if in_position:
-            exit_date = date
-            exit_price = row['Close']
-            trade_ret = (exit_price - entry_price) / entry_price * 100
+
+    # 2. 매도 청산 판정 (보유 중일 때)
+    elif in_position and date > entry_date:
+        gross_ret = (row['Close'] - entry_price) / entry_price * 100
+        net_ret = gross_ret - fee_rate  # 수수료 차감 (매수 즉시 -0.2%부터 시작)
+        
+        exit_triggered = False
+        exit_reason = ""
+        
+        if "목표익절" in strategy_type:
+            # 수수료(0.2%)를 제하고도 사용자가 설정한 순익절률(예: +0.5%) 도달 시 익절!
+            if net_ret >= target_net_profit:
+                exit_triggered = True
+                exit_reason = f"🎯 목표익절 (순수익 {net_ret:+.2f}%)"
+            elif dead_cond:
+                exit_triggered = True
+                exit_reason = f"📉 {dead_title} 청산"
+            elif net_ret <= -2.0:
+                exit_triggered = True
+                exit_reason = "🛡️ 손절 방어 (-2.0%)"
+        else:
+            if dead_cond:
+                exit_triggered = True
+                exit_reason = f"📉 {dead_title} 청산"
+                
+        if exit_triggered:
             trades.append({
                 '매수시점': entry_date.strftime(time_str_format),
                 '매수가': entry_price,
-                '매도시점': exit_date.strftime(time_str_format),
-                '매도가': exit_price,
-                '수익률(%)': trade_ret,
-                '결과': '승리 🟢' if trade_ret > 0 else '패배 🔴'
+                '매도시점': date.strftime(time_str_format),
+                '매도가': row['Close'],
+                '매매타점/사유': f"{strat_title} ➜ {exit_reason}",
+                '단순수익률(%)': gross_ret,
+                '실질순수익률(%)': net_ret,  # 수수료 0.2% 공제
+                '결과': '승리 🟢' if net_ret > 0 else '패배 🔴'
+            })
+            signals_list.append({
+                'date': date,
+                'type': exit_reason,
+                'price': row['Close'],
+                'signal': 'SELL'
             })
             in_position = False
 
+# 현재 보유 중인 경우
 if in_position:
-    current_p = df['Close'].iloc[-1]
-    trade_ret = (current_p - entry_price) / entry_price * 100
+    cur_p = current_display_price
+    gross_ret = (cur_p - entry_price) / entry_price * 100
+    net_ret = gross_ret - fee_rate  # 매수 즉시 -0.2% 시작
     trades.append({
         '매수시점': entry_date.strftime(time_str_format),
         '매수가': entry_price,
         '매도시점': '현재 보유 중 ⏳',
-        '매도가': current_p,
-        '수익률(%)': trade_ret,
+        '매도가': cur_p,
+        '매매타점/사유': f"{strat_title} (보유 중 | 초기 -{fee_rate:.2f}%)",
+        '단순수익률(%)': gross_ret,
+        '실질순수익률(%)': net_ret,
         '결과': '진행 중'
     })
 
 trades_df = pd.DataFrame(trades)
 
 # -----------------------------------------------------------------------------
+# 매매 데이터 및 캔들 시세 파일 자동 저장 (데이터 업데이트 시 실시간 자동 저장)
+# -----------------------------------------------------------------------------
+try:
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    if not trades_df.empty:
+        trades_df.to_csv(os.path.join(current_dir, "trade_log.csv"), index=False, encoding="utf-8-sig")
+        trades_df.to_json(os.path.join(current_dir, "trade_log.json"), orient="records", force_ascii=False, indent=2)
+    if not df.empty:
+        df.to_csv(os.path.join(current_dir, "latest_candles.csv"), encoding="utf-8-sig")
+except Exception:
+    pass
+
+# -----------------------------------------------------------------------------
 # 8. 상단 시세 전광판 및 핵심 요약 카드
 # -----------------------------------------------------------------------------
-latest = df.iloc[-1]
-prev = df.iloc[-2] if len(df) > 1 else latest
-change_val = latest['Close'] - prev['Close']
-change_pct = (change_val / prev['Close']) * 100 if prev['Close'] != 0 else 0
-
 is_up = change_val >= 0
 price_class = "current-price-up" if is_up else "current-price-down"
 badge_class = "badge-up" if is_up else "badge-down"
 sign_symbol = "▲" if is_up else "▼"
 
-latest_time_str = df.index[-1].strftime(time_str_format)
-
 st.markdown(f"## {display_title} <span style='font-size:1.05rem; color:#2563EB; font-weight:bold;'>[{timeframe_desc}]</span>", unsafe_allow_html=True)
 
 st.markdown(f"""
 <div class="trading-header">
-    <span class="{price_class}">{latest['Close']:,.2f}</span>
+    <span class="{price_class}">{current_display_price:,.2f}</span>
     <span class="{badge_class}">{sign_symbol} {abs(change_val):,.2f} ({change_pct:+.2f}%)</span>
+    {live_badge_html}
     <span style="color:#64748B; font-size:0.9rem; margin-left:auto;">기준 시점: <b>{latest_time_str}</b></span>
 </div>
 """, unsafe_allow_html=True)
@@ -389,14 +660,21 @@ if signals_list:
     sig_date_str = last_sig['date'].strftime(time_str_format)
     sig_type_str = last_sig['type']
     sig_price = last_sig['price']
-    sig_elapsed_ret = (latest['Close'] - sig_price) / sig_price * 100
+    sig_gross_ret = (current_display_price - sig_price) / sig_price * 100
+    sig_net_ret = sig_gross_ret - fee_rate if last_sig['signal'] == 'BUY' else sig_gross_ret
+    sig_elapsed_ret = sig_net_ret
 else:
     sig_date_str = "신호 없음"
     sig_type_str = "신호 대기 중"
     sig_price = 0
+    sig_gross_ret = 0
+    sig_net_ret = 0
     sig_elapsed_ret = 0
 
-alignment_status = "정배열 (상승 우세 🟢)" if (pd.notna(latest['MA20']) and pd.notna(latest['MA60']) and latest['MA20'] > latest['MA60']) else "역배열 (조정 우세 🔴)"
+if "5선" in strategy_type:
+    alignment_status = "5선>20선 (단기 정배열 🟢)" if (pd.notna(latest['MA5']) and pd.notna(latest['MA20']) and latest['MA5'] > latest['MA20']) else "5선<20선 (단기 역배열 🔴)"
+else:
+    alignment_status = "20선>60선 (중기 정배열 🟢)" if (pd.notna(latest['MA20']) and pd.notna(latest['MA60']) and latest['MA20'] > latest['MA60']) else "20선<60선 (중기 역배열 🔴)"
 
 rsi_now = latest['RSI'] if pd.notna(latest['RSI']) else 50
 if rsi_now >= 70:
@@ -410,9 +688,22 @@ top_c1, top_c2, top_c3, top_c4 = st.columns(4)
 with top_c1:
     st.metric(label="🔔 최근 발생 신호", value=f"{sig_type_str}", delta=f"{sig_date_str}" if sig_price > 0 else "신호 없음")
 with top_c2:
-    st.metric(label="📈 신호 이후 성과", value=f"{sig_elapsed_ret:+.2f}%" if sig_price > 0 else "-", delta="진입 대비 성과")
+    if sig_price > 0 and signals_list and signals_list[-1]['signal'] == 'BUY':
+        st.metric(
+            label="📈 진입 대비 순수익률",
+            value=f"{sig_net_ret:+.2f}%",
+            delta=f"수수료 -{fee_rate:.2f}% 선공제 반영"
+        )
+    elif sig_price > 0:
+        st.metric(
+            label="📈 직전 청산가",
+            value=f"{sig_price:,.2f}",
+            delta="청산 완료"
+        )
+    else:
+        st.metric(label="📈 진입 대비 순수익률", value="-")
 with top_c3:
-    st.metric(label="📐 20선 / 60선 배열", value=alignment_status)
+    st.metric(label="📐 이평선 정배열 상태", value=alignment_status)
 with top_c4:
     st.metric(label="📊 RSI (14)", value=rsi_desc)
 
@@ -481,39 +772,61 @@ fig.add_trace(go.Candlestick(
     hoverlabel=dict(bgcolor="#1E293B", font_color="#FFFFFF", font_size=12)
 ), row=1, col=1)
 
-# 20선 & 60선
+# 이동평균선 (5선, 20선, 60선)
 if show_ma_lines:
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], mode='lines', name='20선', line=dict(color='#F59E0B', width=2.0), hovertemplate='20선: %{y:,.2f}<extra></extra>'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA60'], mode='lines', name='60선', line=dict(color='#10B981', width=2.0), hovertemplate='60선: %{y:,.2f}<extra></extra>'), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['MA5'], mode='lines', name='5선 (단기선)',
+        line=dict(color='#8B5CF6', width=1.6),
+        hovertemplate='5선: %{y:,.2f}<extra></extra>'
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['MA20'], mode='lines', name='20선 (생명선)',
+        line=dict(color='#F59E0B', width=2.0),
+        hovertemplate='20선: %{y:,.2f}<extra></extra>'
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['MA60'], mode='lines', name='60선 (수급선)',
+        line=dict(color='#10B981', width=1.8),
+        hovertemplate='60선: %{y:,.2f}<extra></extra>'
+    ), row=1, col=1)
 
-# 골든/데드크로스 마커
-if show_signals:
-    golden_df = df[df['Golden_Cross']]
-    if not golden_df.empty:
+# 전략 매수 / 매도 타점 마커 (5선/20선 타점 및 목표익절 반영)
+if show_signals and signals_list:
+    buy_sigs = [s for s in signals_list if s['signal'] == 'BUY']
+    sell_sigs = [s for s in signals_list if s['signal'] == 'SELL']
+
+    if buy_sigs:
+        buy_x = [s['date'] for s in buy_sigs]
+        buy_y = [s['price'] * 0.992 for s in buy_sigs]
+        buy_reasons = [s['type'] for s in buy_sigs]
         fig.add_trace(go.Scatter(
-            x=golden_df.index,
-            y=golden_df['Low'] * 0.985,
+            x=buy_x,
+            y=buy_y,
             mode='markers+text',
             marker=dict(symbol='triangle-up', size=13, color='#10B981', line=dict(width=1.5, color='#047857')),
-            text='매수▲',
+            text=['매수▲'] * len(buy_x),
             textposition='bottom center',
-            textfont=dict(color='#10B981', size=11),
-            name='골든크로스(매수 ▲)',
-            hovertemplate=f'<b>🟢 매수 신호</b><br>시점: {candle_date_fmt}<br>체결가: %{{y:,.2f}}<extra></extra>'
+            textfont=dict(color='#10B981', size=11, family='Malgun Gothic, Apple SD Gothic Neo, sans-serif'),
+            name='매수 진입점 ▲',
+            customdata=buy_reasons,
+            hovertemplate=f'<b>🟢 매수 진입</b><br>타점: %{{customdata}}<br>시점: {candle_date_fmt}<br>체결가: %{{y:,.2f}}<extra></extra>'
         ), row=1, col=1)
 
-    dead_df = df[df['Dead_Cross']]
-    if not dead_df.empty:
+    if sell_sigs:
+        sell_x = [s['date'] for s in sell_sigs]
+        sell_y = [s['price'] * 1.008 for s in sell_sigs]
+        sell_reasons = [s['type'] for s in sell_sigs]
         fig.add_trace(go.Scatter(
-            x=dead_df.index,
-            y=dead_df['High'] * 1.015,
+            x=sell_x,
+            y=sell_y,
             mode='markers+text',
             marker=dict(symbol='triangle-down', size=13, color='#EF4444', line=dict(width=1.5, color='#B91C1C')),
-            text='매도▼',
+            text=['매도▼'] * len(sell_x),
             textposition='top center',
-            textfont=dict(color='#EF4444', size=11),
-            name='데드크로스(매도 ▼)',
-            hovertemplate=f'<b>🔴 매도 신호</b><br>시점: {candle_date_fmt}<br>체결가: %{{y:,.2f}}<extra></extra>'
+            textfont=dict(color='#EF4444', size=11, family='Malgun Gothic, Apple SD Gothic Neo, sans-serif'),
+            name='매도 청산점 ▼',
+            customdata=sell_reasons,
+            hovertemplate=f'<b>🔴 매도 청산</b><br>사유: %{{customdata}}<br>시점: {candle_date_fmt}<br>체결가: %{{y:,.2f}}<extra></extra>'
         ), row=1, col=1)
 
 if show_bb:
@@ -618,38 +931,61 @@ st.plotly_chart(fig, use_container_width=True, config=plotly_chart_config)
 # -----------------------------------------------------------------------------
 # 10. 매매 전략 성과 검증 대시보드
 # -----------------------------------------------------------------------------
-st.subheader(f"🧪 [{sub_interval}] 20선 & 60선 크로스 전략 검증")
+strat_clean_title = strategy_type.split(' (')[0]
+st.subheader(f"🧪 [{sub_interval}] {strat_clean_title} 실전 성과 검증")
+
+st.info(
+    f"💡 **실전 매매 전략 & 수수료 원칙 안내**<br>"
+    f"• **초기 진입 -{fee_rate:.2f}% 페널티**: 매수 체결 즉시 유관기관 수수료, 증권사 수수료 및 거래세({fee_rate:.2f}%)가 선공제되어 **-{fee_rate:.2f}%**부터 시작합니다.<br>"
+    f"• **+{target_net_profit:.2f}% 이상 순익절 원칙**: 단순 시세차익뿐 아니라 수수료 {fee_rate:.2f}%를 완전히 만회하고도 실질 순수익이 **+{target_net_profit:.2f}% 이상** 달성되었을 때만 목표 익절을 단행합니다.<br>"
+    f"• **5선/20선 골든·데드 타점**: 5일선이 20일선을 상향 돌파(골든크로스) 시 매수하고, 목표익절 도달 또는 데드크로스 이탈 시 안전하게 청산합니다.",
+    icon="ℹ️"
+)
 
 if not trades_df.empty:
     completed_trades = trades_df[trades_df['매도시점'] != '현재 보유 중 ⏳']
     total_trades_cnt = len(completed_trades)
     
     if total_trades_cnt > 0:
-        win_trades_cnt = (completed_trades['수익률(%)'] > 0).sum()
+        win_trades_cnt = int((completed_trades['실질순수익률(%)'] > 0).sum())
         win_rate = (win_trades_cnt / total_trades_cnt) * 100
-        cum_strategy_return = ((1 + completed_trades['수익률(%)'] / 100).prod() - 1) * 100
-        avg_ret = completed_trades['수익률(%)'].mean()
+        cum_net_return = ((1 + completed_trades['실질순수익률(%)'] / 100).prod() - 1) * 100
+        cum_gross_return = ((1 + completed_trades['단순수익률(%)'] / 100).prod() - 1) * 100
+        avg_net_ret = completed_trades['실질순수익률(%)'].mean()
+        total_fees = total_trades_cnt * fee_rate
     else:
+        win_trades_cnt = 0
         win_rate = 0
-        cum_strategy_return = 0
-        avg_ret = 0
+        cum_net_return = 0
+        cum_gross_return = 0
+        avg_net_ret = 0
+        total_fees = 0
 
     buy_and_hold_return = ((df['Close'].iloc[-1] - df['Close'].iloc[0]) / df['Close'].iloc[0]) * 100
 
     b_col1, b_col2, b_col3, b_col4 = st.columns(4)
-    b_col1.metric("전략 승률", f"{win_rate:.1f}%", f"{win_trades_cnt}승 {total_trades_cnt - win_trades_cnt}패" if total_trades_cnt > 0 else "완료 거래 없음")
-    b_col2.metric("전략 누적 수익률", f"{cum_strategy_return:+.2f}%", f"단순보유比 {cum_strategy_return - buy_and_hold_return:+.2f}%p")
-    b_col3.metric("단순 보유 수익률", f"{buy_and_hold_return:+.2f}%")
-    b_col4.metric("평균 거래 수익률", f"{avg_ret:+.2f}%")
+    b_col1.metric("실전 순승률 (수수료 공제 후)", f"{win_rate:.1f}%", f"{win_trades_cnt}승 {total_trades_cnt - win_trades_cnt}패" if total_trades_cnt > 0 else "완료 거래 없음")
+    b_col2.metric("전략 누적 순수익률", f"{cum_net_return:+.2f}%", f"단순보유比 {cum_net_return - buy_and_hold_return:+.2f}%p")
+    b_col3.metric("단순 보유(Buy&Hold) 수익률", f"{buy_and_hold_return:+.2f}%", delta="시장 기본 성과")
+    b_col4.metric("건당 평균 순수익률", f"{avg_net_ret:+.2f}%", delta=f"총 거래수수료 -{total_fees:.2f}%", delta_color="inverse")
 
-    with st.expander(f"📜 [{sub_interval}] 상세 매매 일지 (Trade Log)", expanded=True):
+    with st.expander(f"📜 [{sub_interval}] 매매 상세 일지 (5선/20선 타점 & 실질 순익)", expanded=True):
+        st.caption(f"💾 **파일 자동 저장 완료**: 시세 및 매매 타점이 업데이트될 때마다 `trade_log.csv`와 `trade_log.json` 파일로 자동 저장됩니다. (최종 저장: {latest_time_str})")
         st.dataframe(
             trades_df.style.format({
                 '매수가': '{:,.2f}',
                 '매도가': '{:,.2f}',
-                '수익률(%)': '{:+.2f}%'
+                '단순수익률(%)': '{:+.2f}%',
+                '실질순수익률(%)': '{:+.2f}%'
             }),
             use_container_width=True
         )
+        csv_bytes = trades_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+        st.download_button(
+            label="📥 매매 상세 일지 CSV 다운로드 (엑셀 호환)",
+            data=csv_bytes,
+            file_name=f"trade_log_{ticker_symbol}_{sub_interval}.csv",
+            mime="text/csv"
+        )
 else:
-    st.info(f"💡 선택하신 [{timeframe_desc}] 기간 내에 발생한 골든/데드크로스 신호가 없습니다. 사이드바에서 조회 기간을 더 길게 변경해 보세요.")
+    st.info(f"💡 선택하신 [{timeframe_desc}] 기간 내에 발생한 매매 신호가 없습니다. 사이드바에서 조회 기간을 더 길게 변경해 보세요.")
